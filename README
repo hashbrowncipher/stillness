@@ -1,0 +1,22 @@
+stillness
+=========
+
+`stillness` creates a sandbox that freezes your code's relationship with the
+system clock. Processes that run under `stillness` see time run at the usual
+rate, but offset from current:
+
+   $ stillness 1577836800 date
+   Wed Jan  1 00:00:00 UTC 2020
+   $ stillness 1577836800 bash -c "date; sleep 10; date"
+   Wed Jan  1 00:00:00 UTC 2020
+   Wed Jan  1 00:00:10 UTC 2020
+
+`stillness` only affects the system clock, not file times:
+
+   $ stillness 0 date -r stillness.c
+   Sun May 28 02:06:23 UTC 2023
+
+`stillness` uses seccomp-bpf's TRACE mode to intercept the `clock_gettime`,
+`gettimeofday`, and `time` syscalls. Its performance impact should be minimal
+for workloads that use these syscalls infrequently, but is noticeable when the
+system clock is accessed in a tight loop.

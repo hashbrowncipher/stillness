@@ -10,5 +10,5 @@ gettimeofday: gettimeofday.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 indent:
-	indent -br -nsai -nsaf -nsaw -npcs *.c
+	indent -br -brs -brf -npsl -nsai -nsaf -nsaw -npcs *.c
 

@@ -48,15 +48,12 @@ struct sock_fprog filterprog = {
 };
 
 
-struct mapping
-{
+struct mapping {
   void *start;
   void *stop;
 };
 
-static inline bool
-endswith(const char *haystack, const char *needle)
-{
+static inline bool endswith(const char *haystack, const char *needle) {
   int needle_len = strlen(needle);
   int haystack_len = strlen(haystack);
   if(haystack_len < needle_len) {
@@ -69,9 +66,7 @@ endswith(const char *haystack, const char *needle)
 
 // Adapted from
 // https://github.com/eklitzke/ptrace-call-userspace
-static struct mapping *
-find_library(pid_t pid, const char *libname)
-{
+static struct mapping *find_library(pid_t pid, const char *libname) {
   char filename[32];
   snprintf(filename, sizeof(filename), "/proc/%d/maps", pid);
   FILE *f = fopen(filename, "r");
@@ -96,9 +91,7 @@ find_library(pid_t pid, const char *libname)
   return NULL;
 }
 
-static void *
-get_offset_time(struct timespec *ts, struct timespec offset)
-{
+static void *get_offset_time(struct timespec *ts, struct timespec offset) {
   clock_gettime(CLOCK_REALTIME, ts);
   ts->tv_sec += offset.tv_sec;
   ts->tv_nsec += offset.tv_nsec;
@@ -108,9 +101,7 @@ get_offset_time(struct timespec *ts, struct timespec offset)
   }
 }
 
-static void
-handle_time(pid_t pid, struct timespec offset)
-{
+static void handle_time(pid_t pid, struct timespec offset) {
   struct user_regs_struct regs;
   ptrace(PTRACE_GETREGS, pid, NULL, &regs);
   time_t *time_tracee = (time_t *) regs.rdi;
@@ -128,9 +119,7 @@ handle_time(pid_t pid, struct timespec offset)
 
 
 
-static void
-handle_gettimeofday(pid_t pid, struct timespec offset)
-{
+static void handle_gettimeofday(pid_t pid, struct timespec offset) {
   struct user_regs_struct regs;
   ptrace(PTRACE_GETREGS, pid, NULL, &regs);
   struct timeval *timeval_tracee = (struct timeval *) regs.rdi;
@@ -149,9 +138,7 @@ handle_gettimeofday(pid_t pid, struct timespec offset)
 	  ts.tv_nsec / 1000) == 0);
 }
 
-static void
-handle_clock_gettime(pid_t pid, struct timespec offset)
-{
+static void handle_clock_gettime(pid_t pid, struct timespec offset) {
   struct user_regs_struct regs;
   ptrace(PTRACE_GETREGS, pid, NULL, &regs);
   if(regs.rdi != CLOCK_REALTIME) {
@@ -190,9 +177,7 @@ static void unmap_library(pid_t pid, const char *libname) {
  * Taken from https://github.com/danteu/novdso
  * Licensed MIT No Attribution
  */
-void
-erase_auxv(int pid)
-{
+void erase_auxv(int pid) {
   size_t pos;
   int zeroCount;
   long val;
@@ -221,9 +206,7 @@ erase_auxv(int pid)
   }
 }
 
-int
-trace_process(int main_pid, struct timespec offset)
-{
+int trace_process(int main_pid, struct timespec offset) {
   int status;
 
   wait(&status);
@@ -277,16 +260,7 @@ trace_process(int main_pid, struct timespec offset)
   return WEXITSTATUS(status);
 }
 
-void
-time_add(struct timespec *ts, long tv_sec, long tv_nsec)
-{
-  ts->tv_sec += tv_sec;
-  ts->tv_nsec += tv_sec;
-}
-
-int
-run_child(char *command, char **argv)
-{
+int run_child(char *command, char **argv) {
   if(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
     perror("Could not start seccomp:");
     exit(1);
@@ -303,9 +277,7 @@ run_child(char *command, char **argv)
   return 1;
 }
 
-int
-main(int argc, char *argv[])
-{
+int main(int argc, char *argv[]) {
   if(argc < 3) {
     fprintf(stderr, "usage: %s <unix timestamp> <command>\n", argv[0]);
     return 1;

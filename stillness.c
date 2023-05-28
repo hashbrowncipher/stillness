@@ -101,9 +101,8 @@ static void *get_offset_time(struct timespec *ts, struct timespec offset) {
   }
 }
 
-static void handle_time(pid_t pid, struct timespec offset) {
-  struct user_regs_struct regs;
-  ptrace(PTRACE_GETREGS, pid, NULL, &regs);
+static void handle_time(pid_t pid, struct user_regs_struct regs,
+			struct timespec offset) {
   time_t *time_tracee = (time_t *) regs.rdi;
 
   struct timespec ts;
@@ -119,9 +118,8 @@ static void handle_time(pid_t pid, struct timespec offset) {
 
 
 
-static void handle_gettimeofday(pid_t pid, struct timespec offset) {
-  struct user_regs_struct regs;
-  ptrace(PTRACE_GETREGS, pid, NULL, &regs);
+static void handle_gettimeofday(pid_t pid, struct user_regs_struct regs,
+				struct timespec offset) {
   struct timeval *timeval_tracee = (struct timeval *) regs.rdi;
 
   regs.orig_rax = -1;		// skip the syscall
@@ -138,9 +136,8 @@ static void handle_gettimeofday(pid_t pid, struct timespec offset) {
 	  ts.tv_nsec / 1000) == 0);
 }
 
-static void handle_clock_gettime(pid_t pid, struct timespec offset) {
-  struct user_regs_struct regs;
-  ptrace(PTRACE_GETREGS, pid, NULL, &regs);
+static void handle_clock_gettime(pid_t pid, struct user_regs_struct regs,
+				 struct timespec offset) {
   if(regs.rdi != CLOCK_REALTIME) {
     return;
   }
@@ -165,9 +162,9 @@ static void unmap_library(pid_t pid, const char *libname) {
         struct mapping * map = find_library(pid, libname);
         assert(map);
         fprintf(stderr, "Unmapping %s %p\n", libname, map->start);
-	struct user_regs_struct regs;
-	ptrace(PTRACE_GETREGS, pid, NULL, &regs);
-	ptrace(PTRACE_SETREGS, pid, NULL, &regs);
+        struct user_regs_struct regs;
+        ptrace(PTRACE_GETREGS, pid, NULL, &regs);
+        ptrace(PTRACE_SETREGS, pid, NULL, &regs);
 
         assert(munmap(map->start, map->stop - map->start) == 0);
         free(map);
@@ -206,6 +203,44 @@ void erase_auxv(int pid) {
   }
 }
 
+int handle_ptrace_event(int status, pid_t pid, struct timespec offset) {
+  switch (status) {
+  case PTRACE_EVENT_VFORK:
+  case PTRACE_EVENT_FORK:
+    pid_t new_pid;
+    ptrace(PTRACE_GETEVENTMSG, pid, 0, &new_pid);
+    assert(waitpid(new_pid, NULL, 0) == new_pid);
+    ptrace(PTRACE_CONT, new_pid, NULL, 0);
+    break;
+  case PTRACE_EVENT_EXEC:
+    erase_auxv(pid);
+    //unmap_maps(pid);
+    break;
+  case PTRACE_EVENT_SECCOMP:
+    struct user_regs_struct regs;
+    ptrace(PTRACE_GETREGS, pid, NULL, &regs);
+    int syscall_no = regs.orig_rax;
+
+    switch (regs.orig_rax) {
+    case SYS_clock_gettime:
+      handle_clock_gettime(pid, regs, offset);
+      break;
+    case SYS_gettimeofday:
+      handle_gettimeofday(pid, regs, offset);
+      break;
+    case SYS_time:
+      handle_time(pid, regs, offset);
+      break;
+    default:
+      fprintf(stderr, "Unkown syscall: %d\n", syscall_no);
+      abort();
+      break;
+    }
+    break;
+  }
+
+}
+
 int trace_process(int main_pid, struct timespec offset) {
   int status;
 
@@ -216,43 +251,26 @@ int trace_process(int main_pid, struct timespec offset) {
 		PTRACE_O_EXITKILL |
 		PTRACE_O_TRACESYSGOOD |
 		PTRACE_O_TRACEEXEC |
-		PTRACE_O_TRACECLONE |
 		PTRACE_O_TRACEFORK |
 		PTRACE_O_TRACEVFORK | PTRACE_O_TRACESECCOMP) == 0);
-  assert(ptrace(PTRACE_SYSCALL, main_pid, NULL, NULL) == 0);
+  assert(ptrace(PTRACE_CONT, main_pid, NULL, NULL) == 0);
 
   pid_t pid;
   while((pid = wait(&status)) != -1) {
-    if(pid == main_pid && (WIFEXITED(status) || WIFSIGNALED(status))) {
-      break;
-    }
-
-    if(status >> 8 == (SIGTRAP | (PTRACE_EVENT_EXEC << 8))) {
-      erase_auxv(pid);
-      //unmap_maps(pid);
-    }
-
-    if(status >> 8 == (SIGTRAP | (PTRACE_EVENT_SECCOMP << 8))) {
-      int rax = ptrace(PTRACE_PEEKUSER, pid, sizeof(long) * ORIG_RAX, 0);
-
-      switch (rax) {
-      case SYS_clock_gettime:
-	handle_clock_gettime(pid, offset);
-	break;
-      case SYS_gettimeofday:
-	handle_gettimeofday(pid, offset);
-	break;
-      case SYS_time:
-	handle_time(pid, offset);
-	break;
-      default:
-	fprintf(stderr, "Unkown syscall: %d\n", rax);
-	abort();
+    if(WIFEXITED(status) || WIFSIGNALED(status)) {
+      if(pid == main_pid) {
 	break;
       }
+      continue;
     }
 
-    ptrace(PTRACE_CONT, pid, NULL, NULL);
+    int signal = WSTOPSIG(status);
+    if(((status >> 8) & 0x7f) == SIGTRAP) {
+      signal = 0;
+      handle_ptrace_event(status >> 16, pid, offset);
+    }
+
+    ptrace(PTRACE_CONT, pid, NULL, signal);
   }
   if(WIFSIGNALED(status)) {
     kill(0, WTERMSIG(status));
@@ -270,7 +288,7 @@ int run_child(char *command, char **argv) {
     exit(1);
   }
 
-  ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+  assert(ptrace(PTRACE_TRACEME, 0, NULL, NULL) == 0);
   kill(getpid(), SIGSTOP);
   execvp(command, argv);
   perror("Failed to exec child process: ");

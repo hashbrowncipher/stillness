@@ -44,7 +44,6 @@ void run(bool print) {
 
 int main() {
   for(int i = 0; i < 100000; i++) {
-    int fd = open("/dev/zero", O_RDONLY);
-    close(fd);
+    run(false);
   }
 }

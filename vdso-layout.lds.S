@@ -70,10 +70,17 @@ VERSION
 {
         LINUX_2.6 {
         global:
+                clock_gettime;
                 __vdso_clock_gettime;
+                gettimeofday;
                 __vdso_gettimeofday;
+                getcpu;
+                __vdso_getcpu;
+                time;
+                __vdso_time;
+                clock_getres;
                 __vdso_clock_getres;
-                __vdso_clock_gettime64;
+                __vdso_sgx_enter_enclave;
         local: *;
         };
 }

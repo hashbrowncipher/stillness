@@ -1,17 +1,16 @@
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
-
-extern char vdso_start[];
-extern char vdso_end[];
+#include <sys/auxv.h>
 
 int main() {
-	char * vdso = vdso_start;
-	size_t len = vdso_end - vdso_start;
-	fprintf(stderr, "%lx\n", &vdso_start);
-	int fd = open("/proc/self/exe", O_RDONLY);
-	char * buf = malloc(16384);
-	size_t maps_len = read(fd, buf, 16384);
-	write(STDOUT_FILENO, buf, maps_len);
+  void *vdso = getauxval(AT_SYSINFO_EHDR);
+  int foo = 0;
+  printf("%d\n", foo += 5);
+  struct timespec ts;
+  //clock_gettime(CLOCK_REALTIME, &ts);
+  fprintf(stderr, "%ld.%09ld\n", ts.tv_sec, ts.tv_nsec);
 }

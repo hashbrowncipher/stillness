@@ -1,3 +1,7 @@
 gettimeofday
 stillness
 env
+*.lds
+*.so
+*.so.dbg
+*.o

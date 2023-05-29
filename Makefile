@@ -25,3 +25,7 @@ gettimeofday: gettimeofday.c
 indent:
 	indent -br -brs -brf -npsl -nsai -nsaf -nsaw -npcs *.c
 
+dump_vdso: dump_vdso.c
+	gcc -static -nostdlib -nostartfiles -o $@ $<
+
+main: main.o

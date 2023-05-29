@@ -16,6 +16,7 @@
 #include <sys/ptrace.h>
 #include <linux/ptrace.h>
 #include <sys/reg.h>
+#include <sys/mman.h>
 #include <sys/procfs.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -25,6 +26,9 @@
 #define BPF_Trace(syscall) \
     BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, SYS_##syscall, 0, 1), \
     BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_TRACE)
+
+extern long vdso_start[];
+extern long vdso_end[];
 
 struct sock_filter filter[] = {
   /* validate arch */
@@ -174,12 +178,9 @@ static void unmap_library(pid_t pid, const char *libname) {
  * Taken from https://github.com/danteu/novdso
  * Licensed MIT No Attribution
  */
-void erase_auxv(int pid) {
-  size_t pos;
+void inject_auxv(int pid, uintptr_t child_vdso, size_t pos) {
   int zeroCount;
   long val;
-
-  pos = (size_t) ptrace(PTRACE_PEEKUSER, pid, sizeof(long) * RSP, NULL);
 
   /* skip to auxiliary vector */
   zeroCount = 0;
@@ -188,20 +189,94 @@ void erase_auxv(int pid) {
     if(val == AT_NULL)
       zeroCount++;
   }
-
   /* search the auxiliary vector for AT_SYSINFO_EHDR... */
   val = ptrace(PTRACE_PEEKDATA, pid, pos += 8, NULL);
   while(1) {
     if(val == AT_NULL)
       break;
     if(val == AT_SYSINFO_EHDR) {
-      /* ... and overwrite it */
-      ptrace(PTRACE_POKEDATA, pid, pos, AT_IGNORE);
+      pos += 8;
       break;
     }
+
     val = ptrace(PTRACE_PEEKDATA, pid, pos += 16, NULL);
   }
+
+  ptrace(PTRACE_POKEDATA, pid, pos, (long) child_vdso);
 }
+
+void write_vdso(pid_t pid, void *addr) {
+  assert(addr != MAP_FAILED);
+  assert(vdso_end - vdso_start < 0x2000);
+  const int count = vdso_end - vdso_start;
+  for(int i = 0; i < count; i += 1) {
+    if(vdso_start[i] != 0) {
+      ptrace(PTRACE_POKEDATA, pid, addr, vdso_start[i]);
+    }
+    addr += sizeof(long);
+  }
+}
+
+struct injection_state {
+  uintptr_t child_vdso;
+  uintptr_t rsp;
+};
+
+struct injection_state inject_code(pid_t pid) {
+  struct user_regs_struct regs;
+  ptrace(PTRACE_GETREGS, pid, NULL, &regs);
+
+  long old_word = ptrace(PTRACE_PEEKDATA, pid, regs.rip, NULL);
+  uint8_t isns[8] = {
+    0x0f,
+    0x05,
+    0x0f,
+    0x05,
+    0xcc,
+    0xcc,
+    0xcc,
+    0xcc,
+  };
+  long new_word;
+  memmove(&new_word, isns, sizeof(new_word));
+  ptrace(PTRACE_POKEDATA, pid, regs.rip, new_word);
+  ptrace(PTRACE_SYSCALL, pid, NULL, NULL);	// finish execve
+  assert(waitpid(pid, NULL, 0) == pid);
+
+  ptrace(PTRACE_SYSCALL, pid, NULL, NULL);	// start mmap
+  assert(waitpid(pid, NULL, 0) == pid);
+/*
+    struct ptrace_syscall_info syscall_info;
+    assert(ptrace(PTRACE_GET_SYSCALL_INFO, pid, sizeof(struct ptrace_syscall_info), &syscall_info) > 0);
+    printf("%d %d\n", syscall_info.op, PTRACE_SYSCALL_INFO_EXIT);
+    */
+
+  struct user_regs_struct new_regs;
+  ptrace(PTRACE_GETREGS, pid, NULL, &new_regs);
+
+  new_regs.orig_rax = SYS_mmap;
+  new_regs.rdi = 0;		// addr
+  new_regs.rsi = 0x2000;	// length
+  new_regs.rdx = PROT_READ | PROT_EXEC;	// prot
+  new_regs.r10 = MAP_ANONYMOUS | MAP_PRIVATE;	// flags
+  new_regs.r8 = -1;		// FD
+  new_regs.r9 = 0;		// offset
+  ptrace(PTRACE_SETREGS, pid, NULL, &new_regs);
+
+  assert(ptrace(PTRACE_SYSCALL, pid, NULL, NULL) == 0);	// finish mmap
+  assert(waitpid(pid, NULL, 0) == pid);
+  assert(ptrace(PTRACE_GETREGS, pid, NULL, &new_regs) == 0);
+  write_vdso(pid, (void *) new_regs.rax);
+
+  // restore the original state of the program
+  assert(ptrace(PTRACE_POKEDATA, pid, regs.rip, old_word) == 0);
+  assert(ptrace(PTRACE_SETREGS, pid, NULL, &regs) == 0);
+  return (struct injection_state) {
+    .child_vdso = new_regs.rax,.rsp = regs.rsp
+  };
+}
+
+
 
 int handle_ptrace_event(int status, pid_t pid, struct timespec offset) {
   switch (status) {
@@ -213,8 +288,8 @@ int handle_ptrace_event(int status, pid_t pid, struct timespec offset) {
     ptrace(PTRACE_CONT, new_pid, NULL, 0);
     break;
   case PTRACE_EVENT_EXEC:
-    erase_auxv(pid);
-    //unmap_maps(pid);
+    struct injection_state state = inject_code(pid);
+    inject_auxv(pid, state.child_vdso, state.rsp);
     break;
   case PTRACE_EVENT_SECCOMP:
     struct user_regs_struct regs;
@@ -246,7 +321,7 @@ struct timespec make_offset(long target) {
 
   ret.tv_sec = target - ret.tv_sec;
   if(ret.tv_nsec > 0) {
-    ret.tv_sec -= 1; // borrow
+    ret.tv_sec -= 1;		// borrow
     ret.tv_nsec = 1000000000 - ret.tv_nsec;
   }
 
@@ -286,6 +361,8 @@ int trace_process(int main_pid, long start_time) {
     ptrace(PTRACE_CONT, pid, NULL, signal);
   }
   if(WIFSIGNALED(status)) {
+    // TODO: this means that if they core dump, so do we.
+    // How to fix?
     kill(0, WTERMSIG(status));
   }
   return WEXITSTATUS(status);

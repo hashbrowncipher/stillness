@@ -44,6 +44,6 @@ void run(bool print) {
 
 int main() {
   for(int i = 0; i < 100000; i++) {
-    run(false);
+    run(true);
   }
 }

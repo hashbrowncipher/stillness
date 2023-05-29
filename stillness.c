@@ -238,10 +238,22 @@ int handle_ptrace_event(int status, pid_t pid, struct timespec offset) {
     }
     break;
   }
-
 }
 
-int trace_process(int main_pid, struct timespec offset) {
+struct timespec make_offset(long target) {
+  struct timespec ret;
+  clock_gettime(CLOCK_REALTIME, &ret);
+
+  ret.tv_sec = target - ret.tv_sec;
+  if(ret.tv_nsec > 0) {
+    ret.tv_sec -= 1; // borrow
+    ret.tv_nsec = 1000000000 - ret.tv_nsec;
+  }
+
+  return ret;
+}
+
+int trace_process(int main_pid, long start_time) {
   int status;
 
   wait(&status);
@@ -254,6 +266,7 @@ int trace_process(int main_pid, struct timespec offset) {
 		PTRACE_O_TRACEFORK |
 		PTRACE_O_TRACEVFORK | PTRACE_O_TRACESECCOMP) == 0);
   assert(ptrace(PTRACE_CONT, main_pid, NULL, NULL) == 0);
+  struct timespec offset = make_offset(start_time);
 
   pid_t pid;
   while((pid = wait(&status)) != -1) {
@@ -313,11 +326,6 @@ int main(int argc, char *argv[]) {
     return run_child(argv[2], &argv[2]);
   }
 
-  struct timespec offset;
-  clock_gettime(CLOCK_REALTIME, &offset);
-
-  offset.tv_sec = start_time - offset.tv_sec - 1;
-  offset.tv_nsec = 1000000000 - offset.tv_nsec;
-  return trace_process(child, offset);
+  return trace_process(child, start_time);
 
 }

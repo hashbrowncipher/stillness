@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 #include <time.h>
 
 int __vdso_clock_gettime(clockid_t clock, struct timespec *ts)
